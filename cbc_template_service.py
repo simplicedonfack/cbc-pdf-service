@@ -52,8 +52,38 @@ S_BODY     = cbc_style('CBC_BB','Helvetica',       9,'#333333',spaceAfter=3)
 S_SMALL    = cbc_style('CBC_SM','Helvetica',       8,'#888888',spaceAfter=2)
 S_FOOTER   = cbc_style('CBC_FT','Helvetica',       7,'#888888',alignment=TA_CENTER)
 
-def cbc_table(data, widths, hdr_bg=None):
-    """Tableau aux couleurs CBC avec en-tête gris et lignes alternées."""
+# Style pour le contenu des cellules de tableau avec retour à la ligne automatique
+S_CELL     = cbc_style('CBC_CELL','Helvetica',     8,'#333333', leading=10)
+
+
+def cbc_table(data, widths, hdr_bg=None, wrap_cols=None):
+    """
+    Tableau aux couleurs CBC avec en-tête gris et lignes alternées.
+
+    wrap_cols : liste optionnelle d'indices de colonnes (0-based) dont le
+    contenu doit être enveloppé dans un Paragraph pour permettre le retour
+    à la ligne automatique. Sans cela, un texte plus long que la largeur
+    de colonne déborde et chevauche les colonnes voisines (PDF portrait).
+
+    Les colonnes hors wrap_cols restent en texte brut — utile pour les
+    colonnes courtes (statuts, taux, #) qui reçoivent souvent une
+    coloration conditionnelle via TableStyle TEXTCOLOR après création.
+    """
+    wrap_cols = set(wrap_cols or [])
+
+    if wrap_cols:
+        new_data = []
+        for r_idx, row in enumerate(data):
+            new_row = []
+            for c_idx, cell in enumerate(row):
+                if r_idx > 0 and c_idx in wrap_cols:
+                    texte = '' if cell is None else str(cell)
+                    new_row.append(Paragraph(texte, S_CELL))
+                else:
+                    new_row.append(cell)
+            new_data.append(new_row)
+        data = new_data
+
     t = Table(data, colWidths=widths, repeatRows=1)
     t.setStyle(TableStyle([
         ('FONTNAME',      (0,0),(-1,0),  'Helvetica-Bold'),
@@ -160,6 +190,7 @@ class CBCTemplate:
     S_H2    = S_H2
     S_BODY  = S_BODY
     S_SMALL = S_SMALL
+    S_CELL  = S_CELL
 
     OR    = CBC_OR
     GRIS  = CBC_GRIS
@@ -168,8 +199,8 @@ class CBCTemplate:
     ROUGE = CBC_ROUGE
     ORANG = CBC_ORANG
 
-    def table(self, data, widths, hdr_bg=None):
-        return cbc_table(data, widths, hdr_bg)
+    def table(self, data, widths, hdr_bg=None, wrap_cols=None):
+        return cbc_table(data, widths, hdr_bg, wrap_cols)
 
     def spacer(self, h_mm=4):
         return Spacer(1, h_mm*mm)
