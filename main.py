@@ -389,6 +389,86 @@ def generer_rapport_plan(req: RapportPlanRequest):
 
 
 
+def _section_presence(req: RapportPresenceRequest, numero: int) -> list:
+    """Construit le contenu de la section Presence, reutilisable par
+    /rapport/presence (en tant que section 1+2+3) et /rapport/superviseur
+    (en tant que section unique numerotee dynamiquement)."""
+    st = []
+
+    total      = len(req.collaborateurs)
+    presents   = sum(1 for c in req.collaborateurs if c.statut == 'present')
+    en_repos   = sum(1 for c in req.collaborateurs if c.statut == 'repos')
+    en_mission = sum(1 for c in req.collaborateurs if c.statut == 'mission')
+    conges     = sum(1 for c in req.collaborateurs if c.statut in ('conge', 'maladie', 'permission'))
+    absents    = sum(1 for c in req.collaborateurs if c.statut == 'absent')
+    retards    = sum(1 for c in req.collaborateurs if c.statut == 'retard')
+
+    # Taux unifié : calculé hors collaborateurs en repos.
+    denom = total - en_repos
+    taux  = round(presents / denom * 100) if denom > 0 else None
+
+    nature_str = TYPE_JOUR_FR.get(req.type_jour, req.type_jour.replace('_', ' ').capitalize())
+
+    st.append(Paragraph(f'{numero}.   PRESENCE DU JOUR', S_H1))
+    st.append(Paragraph(f'Nature du jour : <b>{nature_str}</b>', S_BODY))
+    st.append(Spacer(1, 2*mm))
+
+    taux_str = f'{taux}%' if taux is not None else '—'
+    taux_col = CBC_GRIS if taux is None else (CBC_VERT if taux >= 80 else (CBC_ORANG if taux >= 60 else CBC_ROUGE))
+
+    kt = Table(
+        [['Presents','En repos','En mission','Conges','Absents','Retards','Total','TAUX'],
+         [str(presents), str(en_repos), str(en_mission), str(conges),
+          str(absents), str(retards), str(total), taux_str]],
+        colWidths=[22*mm]*7+[24*mm], rowHeights=[10*mm, 16*mm])
+    kt.setStyle(TableStyle([
+        ('FONTNAME',(0,0),(-1,0),'Helvetica-Bold'),
+        ('FONTNAME',(0,1),(-1,1),'Helvetica-Bold'),
+        ('FONTSIZE',(0,0),(-1,0),7.5), ('FONTSIZE',(0,1),(-1,1),15),
+        ('BACKGROUND',(0,0),(-1,0),CBC_GRIS), ('TEXTCOLOR',(0,0),(-1,0),BLANC),
+        ('BACKGROUND',(0,1),(6,1),colors.HexColor('#F5F6FA')),
+        ('BACKGROUND',(7,1),(7,1),CBC_GRIS),
+        ('TEXTCOLOR',(0,1),(0,1),CBC_VERT),
+        ('TEXTCOLOR',(1,1),(1,1),CBC_INDIGO),
+        ('TEXTCOLOR',(2,1),(2,1),CBC_BLEU),
+        ('TEXTCOLOR',(3,1),(3,1),CBC_ORANG),
+        ('TEXTCOLOR',(4,1),(4,1),CBC_ROUGE),
+        ('TEXTCOLOR',(5,1),(5,1),CBC_ORANG),
+        ('TEXTCOLOR',(6,1),(6,1),CBC_GRIS),
+        ('TEXTCOLOR',(7,1),(7,1),taux_col),
+        ('ALIGN',(0,0),(-1,-1),'CENTER'), ('VALIGN',(0,0),(-1,-1),'MIDDLE'),
+        ('GRID',(0,0),(-1,-1),0.3,colors.HexColor('#CCCCCC')),
+    ]))
+    st += [kt, Spacer(1,5*mm)]
+
+    # Detail par collaborateur
+    st.append(Paragraph('Detail par collaborateur', S_BODY))
+    d_data = [['#','Nom et Prenom','Fonction','Statut','Heure','Observations']]
+    for i, c in enumerate(req.collaborateurs, 1):
+        d_data.append([str(i), f'{c.nom} {c.prenom}', c.role,
+                       STATUT_FR.get(c.statut, c.statut),
+                       c.heure_arrivee or '—', c.commentaire or ''])
+    dt = cbc_table(d_data, [8*mm,50*mm,24*mm,22*mm,18*mm,52*mm], wrap_cols=[1,5])
+    for i, c in enumerate(req.collaborateurs, 1):
+        col = STATUT_COLOR.get(c.statut, CBC_GRIS)
+        dt.setStyle(TableStyle([
+            ('TEXTCOLOR',(3,i),(3,i),col),
+            ('FONTNAME',(3,i),(3,i),'Helvetica-Bold')
+        ]))
+    st += [dt, Spacer(1,5*mm)]
+
+    # Evolution 7 jours (hors repos)
+    if req.evolution:
+        st.append(Paragraph('Evolution de la presence - 7 jours (hors repos)', S_BODY))
+        e_data = [['Date','Presents','Total (hors repos)','Taux']]
+        for e in req.evolution:
+            e_data.append([e.date, str(e.presents), str(e.total), f'{e.taux}%'])
+        et = cbc_table(e_data, [40*mm, 30*mm, 40*mm, 30*mm])
+        st += [et, Spacer(1,5*mm)]
+
+    return st
+
+
 @app.post("/rapport/superviseur")
 def generer_rapport_superviseur(req: RapportSuperviseurRequest):
     """Génère le rapport consolidé Vue Superviseur (trame CBC officielle).
@@ -463,6 +543,10 @@ def generer_rapport_superviseur(req: RapportSuperviseurRequest):
                 c_data.append([c.collaborateur, c.date_soumission])
             ct = cbc_table(c_data, [90*mm, 80*mm])
             st += [ct, Spacer(1,5*mm)]
+
+        # ── Section 3 — Presence du jour (reutilise _section_presence) ──
+        if req.presence:
+            st += _section_presence(req.presence, 3)
 
         tmpl.build(buf, st,
                    titre='RAPPORT DE SYNTHESE - VUE SUPERVISEUR',
