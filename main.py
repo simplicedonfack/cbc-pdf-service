@@ -167,7 +167,8 @@ def generer_rapport_presence(req: RapportPresenceRequest):
             d_data.append([str(i), f'{c.nom} {c.prenom}', c.role,
                            STATUT_FR.get(c.statut, c.statut),
                            c.heure_arrivee or '—', c.commentaire or ''])
-        dt = cbc_table(d_data, [8*mm,50*mm,24*mm,22*mm,18*mm,52*mm])
+        # wrap_cols : Nom et Prenom (1) et Observations (5) — textes pouvant être longs
+        dt = cbc_table(d_data, [8*mm,50*mm,24*mm,22*mm,18*mm,52*mm], wrap_cols=[1,5])
         for i, c in enumerate(req.collaborateurs, 1):
             col = STATUT_COLOR.get(c.statut, CBC_GRIS)
             dt.setStyle(TableStyle([
@@ -228,7 +229,8 @@ def generer_rapport_plan(req: RapportPlanRequest):
             ['Contraintes bloquantes', str(contraintes), 'Necessitent une decision'],
             ['Budget prevu', f"{req.budget_prevu/1e6:.0f} M FCFA", f'Exercice {req.annee}'],
         ]
-        kt = cbc_table(k_data, [80*mm, 30*mm, 64*mm])
+        # wrap_cols : Indicateur (0) et Commentaire (2) — libellés pouvant être longs
+        kt = cbc_table(k_data, [80*mm, 30*mm, 64*mm], wrap_cols=[0,2])
         taux_col = CBC_VERT if taux_moyen>=50 else CBC_ROUGE
         kt.setStyle(TableStyle([
             ('FONTNAME',(0,-1),(-1,-1),'Helvetica-Bold'),
@@ -243,13 +245,14 @@ def generer_rapport_plan(req: RapportPlanRequest):
         for a in req.actions:
             d_data.append([
                 str(a.numero or ''),
-                (a.intitule or '')[:60],
+                (a.intitule or '')[:120],
                 CATEGORIE_FR.get(a.categorie, a.categorie),
                 STATUT_PLAN_FR.get(a.statut, a.statut),
                 f'{a.taux_realisation}%',
                 'OUI' if a.contrainte_bloquante else '',
             ])
-        dt = cbc_table(d_data, [8*mm, 60*mm, 28*mm, 22*mm, 12*mm, 16*mm])
+        # wrap_cols : Intitule (1) et Categorie (2) — textes longs sources du chevauchement
+        dt = cbc_table(d_data, [8*mm, 60*mm, 28*mm, 22*mm, 12*mm, 16*mm], wrap_cols=[1,2])
         for i, a in enumerate(req.actions, 1):
             if a.contrainte_bloquante:
                 dt.setStyle(TableStyle([('TEXTCOLOR',(5,i),(5,i),CBC_ROUGE),('FONTNAME',(5,i),(5,i),'Helvetica-Bold')]))
@@ -263,12 +266,13 @@ def generer_rapport_plan(req: RapportPlanRequest):
             aj_data = [['Action concernee','Type','Motif','Date']]
             for aj in req.ajustements:
                 aj_data.append([
-                    (aj.action_intitule or '')[:50],
+                    (aj.action_intitule or '')[:120],
                     aj.type_ajustement,
-                    (aj.motif or '')[:70],
+                    (aj.motif or '')[:200],
                     aj.date_ajustement,
                 ])
-            st += [cbc_table(aj_data, [50*mm, 20*mm, 70*mm, 20*mm]), Spacer(1,5*mm)]
+            # wrap_cols : Action concernee (0) et Motif (2) — textes longs
+            st += [cbc_table(aj_data, [50*mm, 20*mm, 70*mm, 20*mm], wrap_cols=[0,2]), Spacer(1,5*mm)]
 
         tmpl.build(buf, st,
                    titre=f'RAPPORT PLAN MARKETING {req.annee}',
