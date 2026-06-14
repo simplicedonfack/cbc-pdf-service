@@ -556,9 +556,65 @@ def generer_rapport_superviseur(req: RapportSuperviseurRequest):
             ct = cbc_table(c_data, [90*mm, 80*mm])
             st += [ct, Spacer(1,5*mm)]
 
+        # ── Numerotation dynamique des sections suivantes (3, 4, ...) ──
+        section_num = 3
+
         # ── Section 3 — Presence du jour (reutilise _section_presence) ──
         if req.presence:
-            st += _section_presence(req.presence, 3)
+            st += _section_presence(req.presence, section_num)
+            section_num += 1
+
+        # ── Section 4 — Plan Marketing ────────────────────────
+        if req.stat_plan:
+            sp = req.stat_plan
+            st.append(Paragraph(f'{section_num}.   PLAN MARKETING {sp.annee}', S_H1))
+
+            taux_col_plan = CBC_VERT if sp.taux_moyen >= 50 else CBC_ORANG
+            pt = Table(
+                [['Taux moyen','En cours','Realisees','A risque','Contraintes'],
+                 [f'{sp.taux_moyen}%', str(sp.en_cours), str(sp.realisees), str(sp.a_risque), str(sp.contraintes)]],
+                colWidths=[34*mm]*5, rowHeights=[10*mm, 16*mm])
+            pt.setStyle(TableStyle([
+                ('FONTNAME',(0,0),(-1,0),'Helvetica-Bold'),
+                ('FONTNAME',(0,1),(-1,1),'Helvetica-Bold'),
+                ('FONTSIZE',(0,0),(-1,0),8), ('FONTSIZE',(0,1),(-1,1),18),
+                ('BACKGROUND',(0,0),(-1,0),CBC_GRIS), ('TEXTCOLOR',(0,0),(-1,0),BLANC),
+                ('BACKGROUND',(0,1),(-1,1),colors.HexColor('#F5F6FA')),
+                ('TEXTCOLOR',(0,1),(0,1), taux_col_plan),
+                ('TEXTCOLOR',(1,1),(1,1), CBC_BLEU),
+                ('TEXTCOLOR',(2,1),(2,1), CBC_VERT),
+                ('TEXTCOLOR',(3,1),(3,1), CBC_ORANG if sp.a_risque > 0 else CBC_GRIS),
+                ('TEXTCOLOR',(4,1),(4,1), CBC_ROUGE if sp.contraintes > 0 else CBC_GRIS),
+                ('ALIGN',(0,0),(-1,-1),'CENTER'), ('VALIGN',(0,0),(-1,-1),'MIDDLE'),
+                ('GRID',(0,0),(-1,-1),0.3,colors.HexColor('#CCCCCC')),
+            ]))
+            st += [pt, Spacer(1,5*mm)]
+
+            # Contraintes bloquantes
+            st.append(Paragraph('Contraintes bloquantes', S_BODY))
+            if not req.actions_bloquantes:
+                st.append(Paragraph('Aucune contrainte active.', S_SMALL))
+            else:
+                b_data = [['Intitule','Responsables']]
+                for a in req.actions_bloquantes:
+                    b_data.append([(a.intitule or '')[:90], a.responsables or '-'])
+                bt = cbc_table(b_data, [110*mm, 60*mm], wrap_cols=[0,1])
+                st += [bt, Spacer(1,3*mm)]
+
+            # Actions a risque
+            st.append(Paragraph('Actions a risque', S_BODY))
+            if not req.actions_risque:
+                st.append(Paragraph('Aucune action a risque.', S_SMALL))
+            else:
+                r_data = [['Intitule','Statut']]
+                for a in req.actions_risque:
+                    r_data.append([(a.intitule or '')[:90], STATUT_PLAN_FR.get(a.statut, a.statut)])
+                rt = cbc_table(r_data, [130*mm, 40*mm], wrap_cols=[0])
+                for i, a in enumerate(req.actions_risque, 1):
+                    rt.setStyle(TableStyle([('TEXTCOLOR',(1,i),(1,i), CBC_ORANG)]))
+                st += [rt, Spacer(1,5*mm)]
+
+            section_num += 1
 
         tmpl.build(buf, st,
                    titre='RAPPORT DE SYNTHESE - VUE SUPERVISEUR',
