@@ -453,6 +453,17 @@ def generer_rapport_superviseur(req: RapportSuperviseurRequest):
                 ]))
             st += [tt, Spacer(1,5*mm)]
 
+        # ── Section 2 — CRAC soumis a valider ─────────────────
+        st.append(Paragraph('2.   CRAC SOUMIS A VALIDER', S_H1))
+        if not req.crac_soumis:
+            st.append(Paragraph('Aucun CRAC en attente de validation.', S_SMALL))
+        else:
+            c_data = [['Collaborateur','Date de soumission']]
+            for c in req.crac_soumis:
+                c_data.append([c.collaborateur, c.date_soumission])
+            ct = cbc_table(c_data, [90*mm, 80*mm])
+            st += [ct, Spacer(1,5*mm)]
+
         tmpl.build(buf, st,
                    titre='RAPPORT DE SYNTHESE - VUE SUPERVISEUR',
                    sous_titre=date_str,
