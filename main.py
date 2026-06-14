@@ -85,6 +85,77 @@ class RapportPlanRequest(BaseModel):
     actions: List[ActionPlan]
     ajustements: Optional[List[AjustementPlan]] = []
 
+# ── Modèles — Rapport Superviseur (consolidé) ──────────────────
+
+class TacheRetard(BaseModel):
+    titre: str
+    collaborateur: str
+    retard: str  # déjà formaté côté front, ex: "+3 jours"
+
+class CracSoumisItem(BaseModel):
+    collaborateur: str
+    date_soumission: str  # déjà formatée côté front (ex: "12 juin")
+
+class StatTaches(BaseModel):
+    en_attente: int
+    en_cours: int
+    soumise: int
+    validee: int
+    rejetee: int
+
+class StatPlan(BaseModel):
+    annee: int
+    taux_moyen: int
+    total: int
+    realisees: int
+    en_cours: int
+    a_risque: int
+    contraintes: int
+
+class ActionBloquante(BaseModel):
+    intitule: str
+    responsables: Optional[str] = None
+
+class ActionRisque(BaseModel):
+    intitule: str
+    statut: str  # 'retardee' | 'reportee' | 'suspendue'
+
+class StatObjectifs(BaseModel):
+    total: int
+    atteints: int
+    en_cours: int
+    non_atteints: int
+    partiellement: int
+
+class StatBudget(BaseModel):
+    total_prevu: float
+    total_realise: float
+
+class RapportSuperviseurRequest(BaseModel):
+    date: str
+    nb_utilisateurs: int
+
+    # Section 1 — KPIs + tâches en retard
+    stat_taches: StatTaches
+    taches_en_retard: List[TacheRetard] = []
+
+    # Section 2 — CRAC soumis
+    crac_soumis: List[CracSoumisItem] = []
+
+    # Section 3 — Présence (réutilise la structure existante)
+    presence: Optional[RapportPresenceRequest] = None
+
+    # Section 4 — Plan Marketing
+    stat_plan: Optional[StatPlan] = None
+    actions_bloquantes: List[ActionBloquante] = []
+    actions_risque: List[ActionRisque] = []
+
+    # Section 5 — Objectifs
+    stat_objectifs: StatObjectifs
+
+    # Section 6 — Budget
+    stat_budget: StatBudget
+
 # ── Helpers ─────────────────────────────────────────────────────
 
 STATUT_FR = {
@@ -312,6 +383,86 @@ def generer_rapport_plan(req: RapportPlanRequest):
             buf,
             media_type='application/pdf',
             headers={'Content-Disposition': f'attachment; filename="Rapport_Plan_Marketing_{req.annee}.pdf"'}
+        )
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+
+@app.post("/rapport/superviseur")
+def generer_rapport_superviseur(req: RapportSuperviseurRequest):
+    """Génère le rapport consolidé Vue Superviseur (trame CBC officielle).
+
+    Construction progressive — section 1 uniquement pour l'instant
+    (KPIs du jour + Tâches en retard), afin de valider le squelette
+    avant d'ajouter les sections 2 à 6.
+    """
+    try:
+        buf = io.BytesIO()
+        tmpl = CBCTemplate()
+
+        # Date formatée
+        try:
+            d = date.fromisoformat(req.date)
+            jours_fr = ['Lundi','Mardi','Mercredi','Jeudi','Vendredi','Samedi','Dimanche']
+            date_str = f"{jours_fr[d.weekday()]} {d.strftime('%d/%m/%Y')}"
+        except:
+            date_str = req.date
+
+        ref = f"DMSAV-SUPV-{req.date.replace('-','')}"
+        st = []
+
+        # ── Section 1 — Indicateurs clés du jour ──────────────
+        st.append(Paragraph('1.   INDICATEURS CLES DU JOUR', S_H1))
+
+        nb_retard = len(req.taches_en_retard)
+        nb_crac   = len(req.crac_soumis)
+
+        kt = Table(
+            [['Taches en retard','CRAC a valider','Taches en cours','Collaborateurs'],
+             [str(nb_retard), str(nb_crac), str(req.stat_taches.en_cours), str(req.nb_utilisateurs)]],
+            colWidths=[42*mm]*4, rowHeights=[10*mm, 16*mm])
+        kt.setStyle(TableStyle([
+            ('FONTNAME',(0,0),(-1,0),'Helvetica-Bold'),
+            ('FONTNAME',(0,1),(-1,1),'Helvetica-Bold'),
+            ('FONTSIZE',(0,0),(-1,0),8), ('FONTSIZE',(0,1),(-1,1),18),
+            ('BACKGROUND',(0,0),(-1,0),CBC_GRIS), ('TEXTCOLOR',(0,0),(-1,0),BLANC),
+            ('BACKGROUND',(0,1),(-1,1),colors.HexColor('#F5F6FA')),
+            ('TEXTCOLOR',(0,1),(0,1), CBC_ROUGE if nb_retard > 0 else CBC_VERT),
+            ('TEXTCOLOR',(1,1),(1,1), CBC_BLEU if nb_crac > 0 else CBC_VERT),
+            ('TEXTCOLOR',(2,1),(2,1), CBC_BLEU),
+            ('TEXTCOLOR',(3,1),(3,1), CBC_GRIS),
+            ('ALIGN',(0,0),(-1,-1),'CENTER'), ('VALIGN',(0,0),(-1,-1),'MIDDLE'),
+            ('GRID',(0,0),(-1,-1),0.3,colors.HexColor('#CCCCCC')),
+        ]))
+        st += [kt, Spacer(1,5*mm)]
+
+        # ── Tâches en retard ───────────────────────────────────
+        st.append(Paragraph('Taches en retard', S_BODY))
+        if not req.taches_en_retard:
+            st.append(Paragraph('Aucun retard - bonne gestion.', S_SMALL))
+        else:
+            t_data = [['Collaborateur','Tache','Retard']]
+            for t in req.taches_en_retard:
+                t_data.append([t.collaborateur, (t.titre or '')[:70], t.retard])
+            tt = cbc_table(t_data, [50*mm, 90*mm, 30*mm], wrap_cols=[1])
+            for i, t in enumerate(req.taches_en_retard, 1):
+                tt.setStyle(TableStyle([
+                    ('TEXTCOLOR',(2,i),(2,i), CBC_ROUGE),
+                    ('FONTNAME',(2,i),(2,i),'Helvetica-Bold'),
+                ]))
+            st += [tt, Spacer(1,5*mm)]
+
+        tmpl.build(buf, st,
+                   titre='RAPPORT DE SYNTHESE - VUE SUPERVISEUR',
+                   sous_titre=date_str,
+                   reference=ref)
+
+        buf.seek(0)
+        return StreamingResponse(
+            buf,
+            media_type='application/pdf',
+            headers={'Content-Disposition': f'attachment; filename="Rapport_Superviseur_{req.date}.pdf"'}
         )
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
