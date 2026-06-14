@@ -168,6 +168,18 @@ STATUT_COLOR = {
     'retard': CBC_ORANG, 'maladie': CBC_ROUGE, 'permission': CBC_BLEU,
     'mission': CBC_BLEU, 'repos': CBC_INDIGO,
 }
+JOURS_ABBR_FR = ['Lun','Mar','Mer','Jeu','Ven','Sam','Dim']
+MOIS_ABBR_FR  = ['Janv','Fevr','Mars','Avr','Mai','Juin','Juil','Aout','Sept','Oct','Nov','Dec']
+
+def _formater_date_courte(iso_date: str) -> str:
+    """Formate une date ISO 'YYYY-MM-DD' en 'Jeu. 12 Juin', avec repli sur
+    la chaine d'origine si le parsing echoue."""
+    try:
+        d = date.fromisoformat(iso_date)
+        return f"{JOURS_ABBR_FR[d.weekday()]}. {d.day:02d} {MOIS_ABBR_FR[d.month-1]}"
+    except Exception:
+        return iso_date
+
 TYPE_JOUR_FR = {
     'ouvre': 'Jour ouvre', 'ouvrable': 'Jour ouvrable',
     'repos': 'Repos hebdomadaire', 'ferie': 'Jour ferie',
@@ -462,7 +474,7 @@ def _section_presence(req: RapportPresenceRequest, numero: int) -> list:
         st.append(Paragraph('Evolution de la presence - 7 jours (hors repos)', S_BODY))
         e_data = [['Date','Presents','Total (hors repos)','Taux']]
         for e in req.evolution:
-            e_data.append([e.date, str(e.presents), str(e.total), f'{e.taux}%'])
+            e_data.append([_formater_date_courte(e.date), str(e.presents), str(e.total), f'{e.taux}%'])
         et = cbc_table(e_data, [40*mm, 30*mm, 40*mm, 30*mm])
         st += [et, Spacer(1,5*mm)]
 
