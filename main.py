@@ -31,6 +31,10 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# Couleur additionnelle pour le statut "Repos" (indigo) — cohérente avec le
+# front-end (badge "Repos" en bg-indigo-100 / text-indigo-700).
+CBC_INDIGO = colors.HexColor('#6366F1')
+
 # ── Modèles de données ─────────────────────────────────────────
 
 class CollaborateurPresence(BaseModel):
@@ -86,12 +90,16 @@ class RapportPlanRequest(BaseModel):
 STATUT_FR = {
     'present': 'Present', 'absent': 'Absent', 'conge': 'Conge',
     'retard': 'Retard', 'maladie': 'Maladie', 'permission': 'Permission',
-    'mission': 'Mission', 'ferie': 'Ferie',
+    'mission': 'Mission', 'repos': 'Repos', 'ferie': 'Ferie',
 }
 STATUT_COLOR = {
     'present': CBC_VERT, 'absent': CBC_ROUGE, 'conge': CBC_ORANG,
     'retard': CBC_ORANG, 'maladie': CBC_ROUGE, 'permission': CBC_BLEU,
-    'mission': CBC_BLEU,
+    'mission': CBC_BLEU, 'repos': CBC_INDIGO,
+}
+TYPE_JOUR_FR = {
+    'ouvre': 'Jour ouvre', 'ouvrable': 'Jour ouvrable',
+    'repos': 'Repos hebdomadaire', 'ferie': 'Jour ferie',
 }
 CATEGORIE_FR = {
     'personnes': 'Personnes',
@@ -122,11 +130,18 @@ def generer_rapport_presence(req: RapportPresenceRequest):
         buf = io.BytesIO()
         tmpl = CBCTemplate()
 
-        total = len(req.collaborateurs)
-        presents = sum(1 for c in req.collaborateurs if c.statut == 'present')
-        absents  = sum(1 for c in req.collaborateurs if c.statut in ('absent','conge','maladie','permission','mission'))
-        retards  = sum(1 for c in req.collaborateurs if c.statut == 'retard')
-        taux     = round(presents / total * 100) if total > 0 else 0
+        total      = len(req.collaborateurs)
+        presents   = sum(1 for c in req.collaborateurs if c.statut == 'present')
+        en_repos   = sum(1 for c in req.collaborateurs if c.statut == 'repos')
+        en_mission = sum(1 for c in req.collaborateurs if c.statut == 'mission')
+        conges     = sum(1 for c in req.collaborateurs if c.statut in ('conge', 'maladie', 'permission'))
+        absents    = sum(1 for c in req.collaborateurs if c.statut == 'absent')
+        retards    = sum(1 for c in req.collaborateurs if c.statut == 'retard')
+
+        # Taux unifié : calculé hors collaborateurs en repos, quel que soit
+        # le type de jour. None si tous les collaborateurs sont en repos.
+        denom = total - en_repos
+        taux  = round(presents / denom * 100) if denom > 0 else None
 
         # Date formatée
         try:
@@ -136,25 +151,38 @@ def generer_rapport_presence(req: RapportPresenceRequest):
         except:
             date_str = req.date
 
+        nature_str = TYPE_JOUR_FR.get(req.type_jour, req.type_jour.replace('_', ' ').capitalize())
         ref = f"DMSAV-PRES-{req.date.replace('-','')}"
         st = []
 
         # 1. Synthèse
         st.append(Paragraph('1.   SYNTHESE DU JOUR', S_H1))
+        st.append(Paragraph(f'Nature du jour : <b>{nature_str}</b>', S_BODY))
+        st.append(Spacer(1, 2*mm))
+
+        taux_str = f'{taux}%' if taux is not None else '—'
+        taux_col = CBC_GRIS if taux is None else (CBC_VERT if taux >= 80 else (CBC_ORANG if taux >= 60 else CBC_ROUGE))
+
         kt = Table(
-            [['Presents','Absents','Retards','Total','Nature','TAUX'],
-             [str(presents), str(absents), str(retards), str(total),
-              req.type_jour.replace('_',' ').capitalize(), f'{taux}%']],
-            colWidths=[28*mm]*5+[30*mm], rowHeights=[10*mm, 16*mm])
-        taux_col = CBC_VERT if taux>=80 else (CBC_ORANG if taux>=60 else CBC_ROUGE)
+            [['Presents','En repos','En mission','Conges','Absents','Retards','Total','TAUX'],
+             [str(presents), str(en_repos), str(en_mission), str(conges),
+              str(absents), str(retards), str(total), taux_str]],
+            colWidths=[22*mm]*7+[24*mm], rowHeights=[10*mm, 16*mm])
         kt.setStyle(TableStyle([
             ('FONTNAME',(0,0),(-1,0),'Helvetica-Bold'),
             ('FONTNAME',(0,1),(-1,1),'Helvetica-Bold'),
-            ('FONTSIZE',(0,0),(-1,0),8), ('FONTSIZE',(0,1),(-1,1),18),
+            ('FONTSIZE',(0,0),(-1,0),7.5), ('FONTSIZE',(0,1),(-1,1),15),
             ('BACKGROUND',(0,0),(-1,0),CBC_GRIS), ('TEXTCOLOR',(0,0),(-1,0),BLANC),
-            ('BACKGROUND',(0,1),(4,1),colors.HexColor('#F5F6FA')),
-            ('BACKGROUND',(5,1),(5,1),CBC_GRIS),
-            ('TEXTCOLOR',(0,1),(4,1),CBC_GRIS), ('TEXTCOLOR',(5,1),(5,1),CBC_OR),
+            ('BACKGROUND',(0,1),(6,1),colors.HexColor('#F5F6FA')),
+            ('BACKGROUND',(7,1),(7,1),CBC_GRIS),
+            ('TEXTCOLOR',(0,1),(0,1),CBC_VERT),
+            ('TEXTCOLOR',(1,1),(1,1),CBC_INDIGO),
+            ('TEXTCOLOR',(2,1),(2,1),CBC_BLEU),
+            ('TEXTCOLOR',(3,1),(3,1),CBC_ORANG),
+            ('TEXTCOLOR',(4,1),(4,1),CBC_ROUGE),
+            ('TEXTCOLOR',(5,1),(5,1),CBC_ORANG),
+            ('TEXTCOLOR',(6,1),(6,1),CBC_GRIS),
+            ('TEXTCOLOR',(7,1),(7,1),taux_col),
             ('ALIGN',(0,0),(-1,-1),'CENTER'), ('VALIGN',(0,0),(-1,-1),'MIDDLE'),
             ('GRID',(0,0),(-1,-1),0.3,colors.HexColor('#CCCCCC')),
         ]))
@@ -177,13 +205,13 @@ def generer_rapport_presence(req: RapportPresenceRequest):
             ]))
         st += [dt, Spacer(1,5*mm)]
 
-        # 3. Évolution 7 jours
+        # 3. Évolution 7 jours (hors repos)
         if req.evolution:
-            st.append(Paragraph('3.   EVOLUTION DE LA PRESENCE — 7 JOURS', S_H1))
-            e_data = [['Date','Presents','Total','Taux']]
+            st.append(Paragraph('3.   EVOLUTION DE LA PRESENCE — 7 JOURS (HORS REPOS)', S_H1))
+            e_data = [['Date','Presents','Total (hors repos)','Taux']]
             for e in req.evolution:
                 e_data.append([e.date, str(e.presents), str(e.total), f'{e.taux}%'])
-            et = cbc_table(e_data, [40*mm, 30*mm, 30*mm, 30*mm])
+            et = cbc_table(e_data, [40*mm, 30*mm, 40*mm, 30*mm])
             st += [et, Spacer(1,5*mm)]
 
         tmpl.build(buf, st,
