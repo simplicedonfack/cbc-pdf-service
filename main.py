@@ -180,6 +180,10 @@ def _formater_date_courte(iso_date: str) -> str:
     except Exception:
         return iso_date
 
+def _formater_fcfa(montant: float) -> str:
+    """Formate un montant en 'X XXX XXX FCFA' (separateur espace)."""
+    return f"{montant:,.0f}".replace(',', ' ') + " FCFA"
+
 TYPE_JOUR_FR = {
     'ouvre': 'Jour ouvre', 'ouvrable': 'Jour ouvrable',
     'repos': 'Repos hebdomadaire', 'ferie': 'Jour ferie',
@@ -615,6 +619,54 @@ def generer_rapport_superviseur(req: RapportSuperviseurRequest):
                 st += [rt, Spacer(1,5*mm)]
 
             section_num += 1
+
+        # ── Section suivante — Objectifs ──────────────────────
+        so = req.stat_objectifs
+        total_obj = so.total
+        def _pct(n):
+            return f'{round(n/total_obj*100)}%' if total_obj > 0 else '0%'
+
+        st.append(Paragraph(f'{section_num}.   OBJECTIFS', S_H1))
+        o_data = [
+            ['Statut','Nb','%'],
+            ['Atteints', str(so.atteints), _pct(so.atteints)],
+            ['En cours', str(so.en_cours), _pct(so.en_cours)],
+            ['Part. atteints', str(so.partiellement), _pct(so.partiellement)],
+            ['Non atteints', str(so.non_atteints), _pct(so.non_atteints)],
+            ['Total', str(total_obj), '100%'],
+        ]
+        ot = cbc_table(o_data, [90*mm, 40*mm, 40*mm])
+        ot.setStyle(TableStyle([
+            ('TEXTCOLOR',(0,1),(0,1),CBC_VERT),  ('FONTNAME',(0,1),(2,1),'Helvetica-Bold'),
+            ('TEXTCOLOR',(0,2),(0,2),CBC_BLEU),  ('FONTNAME',(0,2),(2,2),'Helvetica-Bold'),
+            ('TEXTCOLOR',(0,3),(0,3),CBC_ORANG), ('FONTNAME',(0,3),(2,3),'Helvetica-Bold'),
+            ('TEXTCOLOR',(0,4),(0,4),CBC_ROUGE), ('FONTNAME',(0,4),(2,4),'Helvetica-Bold'),
+            ('FONTNAME',(0,5),(-1,5),'Helvetica-Bold'),
+            ('BACKGROUND',(0,5),(-1,5),colors.HexColor('#EAF0F8')),
+        ]))
+        st += [ot, Spacer(1,5*mm)]
+        section_num += 1
+
+        # ── Section suivante — Budget ─────────────────────────
+        sb = req.stat_budget
+        taux_exec = round(sb.total_realise / sb.total_prevu * 100) if sb.total_prevu > 0 else 0
+        taux_exec_col = CBC_VERT if taux_exec >= 80 else (CBC_ORANG if taux_exec >= 50 else CBC_ROUGE)
+
+        st.append(Paragraph(f'{section_num}.   BUDGET', S_H1))
+        b_data = [
+            ['Indicateur','Valeur'],
+            ['Budget prevu', _formater_fcfa(sb.total_prevu)],
+            ['Budget realise', _formater_fcfa(sb.total_realise)],
+            ["Taux d'execution", f'{taux_exec}%'],
+        ]
+        bt = cbc_table(b_data, [90*mm, 80*mm])
+        bt.setStyle(TableStyle([
+            ('FONTNAME',(0,3),(-1,3),'Helvetica-Bold'),
+            ('BACKGROUND',(0,3),(-1,3),colors.HexColor('#EAF0F8')),
+            ('TEXTCOLOR',(1,3),(1,3), taux_exec_col),
+        ]))
+        st += [bt, Spacer(1,5*mm)]
+        section_num += 1
 
         tmpl.build(buf, st,
                    titre='RAPPORT DE SYNTHESE - VUE SUPERVISEUR',
