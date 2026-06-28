@@ -1,263 +1,287 @@
-# ══════════════════════════════════════════════════════════════════
-# AJOUT À FAIRE dans main.py du microservice PDF
-# Ajouter ces modèles et cet endpoint à la suite des existants
-# ══════════════════════════════════════════════════════════════════
+// CHEMIN : app/api/prospection/rapport/route.ts
+// ACTION  : REMPLACER
 
-# ── Modèles Rapport Prospection ────────────────────────────────
+import { createServerClient } from '@supabase/ssr'
+import { cookies } from 'next/headers'
+import { NextRequest, NextResponse } from 'next/server'
 
-class StatParUser(BaseModel):
-    nom: str
-    agence: str
-    total: int
-    convertis: int
-    qualifies: int
-    perdus: int
-    taux_conversion: int
+const PDF_SERVICE = 'https://cbc-pdf-service-dzep.onrender.com'
 
-class StatParAgence(BaseModel):
-    nom: str
-    total: int
-    convertis: int
-    qualifies: int
-    taux_conversion: int
+export async function POST(req: NextRequest) {
+  try {
+    const cookieStore = cookies()
+    const supabase = createServerClient(
+      process.env.NEXT_PUBLIC_SUPABASE_URL!,
+      process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!,
+      { cookies: { get: (name) => cookieStore.get(name)?.value } }
+    )
 
-class StatParSource(BaseModel):
-    source: str
-    nb: int
-    pct: int
+    const { data: { user } } = await supabase.auth.getUser()
+    if (!user) return NextResponse.json({ error: 'Non authentifié' }, { status: 401 })
 
-class StatParSecteur(BaseModel):
-    secteur: str
-    nb: int
-    pct: int
+    const { data: utilisateur } = await supabase
+      .from('mktg_utilisateurs')
+      .select('id, nom, prenom, role')
+      .eq('supabase_user_id', user.id)
+      .single()
 
-class StatParVille(BaseModel):
-    ville: str
-    nb: int
-    pct: int
+    const body = await req.json()
+    const { format, filtres } = body
 
-class TendanceMois(BaseModel):
-    mois: str
-    mois_label: str
-    crees: int
-    convertis: int
-    taux: int
+    // ── IDs agence si filtre agence ──────────────────────────
+    let agenceUserIds: string[] | null = null
+    if (filtres.agence_id) {
+      const { data: usersAgence } = await supabase
+        .from('mktg_utilisateurs')
+        .select('id')
+        .eq('agence_id', filtres.agence_id)
+      agenceUserIds = (usersAgence || []).map((u: any) => u.id)
+    }
 
-class StatsFiltresLabel(BaseModel):
-    periode: str
-    statut: str
-    source: str
-    secteur: Optional[str] = None
+    // ── Requête principale ────────────────────────────────────
+    let query = supabase
+      .from('mktg_prospects')
+      .select(`
+        id, numero_prospect, raison_sociale, secteur_activite, profession,
+        contact_nom, contact_telephone, ville, quartier,
+        statut, source, notes, created_at, updated_at, date_conversion,
+        lat_capture, lng_capture,
+        createur:mktg_utilisateurs!created_by(
+          id, nom, prenom, role, agence_id,
+          agence:mktg_points_de_vente!agence_id(id, nom, code)
+        )
+      `)
+      .order('created_at', { ascending: false })
 
-class StatsProspection(BaseModel):
-    total: int
-    nb_nouveaux: int
-    nb_contactes: int
-    nb_qualifies: int
-    nb_convertis: int
-    nb_perdus: int
-    taux_conversion: int
-    taux_qualification: int
-    taux_perte: int
-    delai_moyen_jours: Optional[int] = None
-    nb_geolocal: int
-    pct_geolocal: int
-    par_user: List[StatParUser] = []
-    par_agence: List[StatParAgence] = []
-    par_source: List[StatParSource] = []
-    par_secteur: List[StatParSecteur] = []
-    par_ville: List[StatParVille] = []
-    tendance_mensuelle: List[TendanceMois] = []
+    // Filtres période
+    if (filtres.date_debut) query = query.gte('created_at', filtres.date_debut)
+    if (filtres.date_fin)   query = query.lte('created_at', filtres.date_fin + 'T23:59:59')
 
-class RapportProspectionRequest(BaseModel):
-    filtres: StatsFiltresLabel
-    stats: StatsProspection
-    genere_par: str
-    genere_le: str
+    // Filtre statut
+    if (filtres.statut && filtres.statut !== 'tous') query = query.eq('statut', filtres.statut)
 
+    // Filtre utilisateur
+    if (filtres.utilisateur_id) {
+      query = query.eq('created_by', filtres.utilisateur_id)
+    } else if (agenceUserIds) {
+      if (agenceUserIds.length > 0) query = query.in('created_by', agenceUserIds)
+      else return NextResponse.json({ stats: emptyStats(), liste: [], filtresLabel: {}, genere_par: '', genere_le: '' })
+    }
 
-# ── Helpers couleurs taux ───────────────────────────────────────
+    // Filtre source
+    if (filtres.source && filtres.source !== 'tous') query = query.eq('source', filtres.source)
 
-def _taux_color(taux: int):
-    if taux >= 20: return CBC_VERT
-    if taux >= 10: return CBC_ORANG
-    return CBC_ROUGE
+    // Filtre secteur
+    if (filtres.secteur_activite && filtres.secteur_activite !== 'tous') {
+      query = query.eq('secteur_activite', filtres.secteur_activite)
+    }
 
+    const { data: prospects, error } = await query
 
-# ══════════════════════════════════════════════════════════════════
-# ENDPOINT /rapport/prospection
-# ══════════════════════════════════════════════════════════════════
+    if (error) {
+      console.error('Erreur Supabase:', error)
+      return NextResponse.json({ error: error.message }, { status: 500 })
+    }
 
+    const liste = prospects || []
+    const total = liste.length
+
+    // ── Statistiques ──────────────────────────────────────────
+    const parStatut: Record<string, number> = {}
+    liste.forEach((p: any) => { parStatut[p.statut] = (parStatut[p.statut] || 0) + 1 })
+
+    const nbConvertis  = parStatut['converti']  || 0
+    const nbQualifies  = parStatut['qualifie']  || 0
+    const nbContactes  = parStatut['contacte']  || 0
+    const nbNouveaux   = parStatut['nouveau']   || 0
+    const nbPerdus     = parStatut['perdu']     || 0
+
+    const tauxConversion    = total > 0 ? Math.round(nbConvertis / total * 100) : 0
+    const tauxQualification = total > 0 ? Math.round((nbQualifies + nbConvertis) / total * 100) : 0
+    const tauxPerte         = total > 0 ? Math.round(nbPerdus / total * 100) : 0
+
+    // Délai moyen conversion
+    const convertisAvecDate = liste.filter((p: any) => p.date_conversion && p.created_at)
+    const delaiMoyen = convertisAvecDate.length > 0
+      ? Math.round(convertisAvecDate.reduce((acc: number, p: any) => {
+          const diff = new Date(p.date_conversion).getTime() - new Date(p.created_at).getTime()
+          return acc + diff / (1000 * 60 * 60 * 24)
+        }, 0) / convertisAvecDate.length)
+      : null
+
+    // Par utilisateur
+    const parUser: Record<string, any> = {}
+    liste.forEach((p: any) => {
+      const u = p.createur
+      if (!u) return
+      const key = u.id
+      if (!parUser[key]) {
+        parUser[key] = {
+          nom: `${u.prenom || ''} ${u.nom || ''}`.trim(),
+          agence: u.agence?.nom || '—',
+          total: 0, convertis: 0, qualifies: 0, perdus: 0
+        }
+      }
+      parUser[key].total++
+      if (p.statut === 'converti') parUser[key].convertis++
+      if (p.statut === 'qualifie') parUser[key].qualifies++
+      if (p.statut === 'perdu')    parUser[key].perdus++
+    })
+    const statsParUser = Object.values(parUser)
+      .map((u: any) => ({
+        ...u,
+        taux_conversion: u.total > 0 ? Math.round(u.convertis / u.total * 100) : 0
+      }))
+      .sort((a: any, b: any) => b.convertis - a.convertis)
+
+    // Par agence
+    const parAgence: Record<string, any> = {}
+    liste.forEach((p: any) => {
+      const agence = p.createur?.agence
+      const key = agence?.id || 'inconnu'
+      const nom = agence?.nom || 'Non renseignée'
+      if (!parAgence[key]) parAgence[key] = { nom, total: 0, convertis: 0, qualifies: 0 }
+      parAgence[key].total++
+      if (p.statut === 'converti') parAgence[key].convertis++
+      if (p.statut === 'qualifie') parAgence[key].qualifies++
+    })
+    const statsParAgence = Object.values(parAgence)
+      .map((a: any) => ({
+        ...a,
+        taux_conversion: a.total > 0 ? Math.round(a.convertis / a.total * 100) : 0
+      }))
+      .sort((a: any, b: any) => b.total - a.total)
+
+    // Par source
+    const parSource: Record<string, number> = {}
+    liste.forEach((p: any) => {
+      const s = p.source || 'Non renseignée'
+      parSource[s] = (parSource[s] || 0) + 1
+    })
+    const statsParSource = Object.entries(parSource)
+      .map(([source, nb]) => ({ source, nb, pct: total > 0 ? Math.round(nb / total * 100) : 0 }))
+      .sort((a, b) => b.nb - a.nb)
+
+    // Par secteur
+    const parSecteur: Record<string, number> = {}
+    liste.forEach((p: any) => {
+      const s = p.secteur_activite || 'Non renseigné'
+      parSecteur[s] = (parSecteur[s] || 0) + 1
+    })
+    const statsParSecteur = Object.entries(parSecteur)
+      .map(([secteur, nb]) => ({ secteur, nb, pct: total > 0 ? Math.round(nb / total * 100) : 0 }))
+      .sort((a, b) => b.nb - a.nb)
+
+    // Par ville
+    const parVille: Record<string, number> = {}
+    liste.forEach((p: any) => {
+      const v = p.ville || 'Non renseignée'
+      parVille[v] = (parVille[v] || 0) + 1
+    })
+    const statsParVille = Object.entries(parVille)
+      .map(([ville, nb]) => ({ ville, nb, pct: total > 0 ? Math.round(nb / total * 100) : 0 }))
+      .sort((a, b) => b.nb - a.nb)
+      .slice(0, 10)
+
+    // Géolocalisation
+    const nbGeolocal = liste.filter((p: any) => p.lat_capture && p.lng_capture).length
+
+    // Tendance mensuelle
+    const parMois: Record<string, { crees: number; convertis: number }> = {}
+    liste.forEach((p: any) => {
+      const mois = p.created_at.substring(0, 7)
+      if (!parMois[mois]) parMois[mois] = { crees: 0, convertis: 0 }
+      parMois[mois].crees++
+      if (p.statut === 'converti') parMois[mois].convertis++
+    })
+    const tendanceMensuelle = Object.entries(parMois)
+      .map(([mois, d]) => ({
+        mois,
+        mois_label: new Date(mois + '-01').toLocaleDateString('fr-FR', { month: 'long', year: 'numeric' }),
+        crees: d.crees,
+        convertis: d.convertis,
+        taux: d.crees > 0 ? Math.round(d.convertis / d.crees * 100) : 0
+      }))
+      .sort((a, b) => a.mois.localeCompare(b.mois))
+
+    const stats = {
+      total,
+      nb_nouveaux:    nbNouveaux,
+      nb_contactes:   nbContactes,
+      nb_qualifies:   nbQualifies,
+      nb_convertis:   nbConvertis,
+      nb_perdus:      nbPerdus,
+      taux_conversion:    tauxConversion,
+      taux_qualification: tauxQualification,
+      taux_perte:         tauxPerte,
+      delai_moyen_jours: delaiMoyen,
+      nb_geolocal:    nbGeolocal,
+      pct_geolocal:   total > 0 ? Math.round(nbGeolocal / total * 100) : 0,
+      par_statut:     parStatut,
+      par_user:       statsParUser,
+      par_agence:     statsParAgence,
+      par_source:     statsParSource,
+      par_secteur:    statsParSecteur,
+      par_ville:      statsParVille,
+      tendance_mensuelle: tendanceMensuelle,
+    }
+
+    const filtresLabel = {
+      periode: filtres.date_debut && filtres.date_fin
+        ? `${new Date(filtres.date_debut).toLocaleDateString('fr-FR')} au ${new Date(filtres.date_fin).toLocaleDateString('fr-FR')}`
+        : 'Toute la période',
+      statut:  filtres.statut && filtres.statut !== 'tous' ? filtres.statut : 'Tous',
+      source:  filtres.source && filtres.source !== 'tous' ? filtres.source : 'Toutes',
+      secteur: filtres.secteur_activite && filtres.secteur_activite !== 'tous' ? filtres.secteur_activite : 'Tous',
+    }
+
+    const genere_par = utilisateur ? `${utilisateur.prenom} ${utilisateur.nom}` : 'DIGITALIS'
+    const genere_le  = new Date().toLocaleDateString('fr-FR')
+
+    // ── FORMAT EXCEL → retourne JSON ─────────────────────────
+    if (format === 'excel') {
+      return NextResponse.json({ stats, liste, filtresLabel, genere_par, genere_le })
+    }
+
+    // ── FORMAT PDF → microservice ─────────────────────────────
+    const payload = { filtres: filtresLabel, stats, genere_par, genere_le }
+
+    const res = await fetch(`${PDF_SERVICE}/rapport/prospection`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    })
+
+    if (!res.ok) {
+      const err = await res.text()
+      return NextResponse.json({ error: `Erreur PDF service: ${err}` }, { status: 500 })
+    }
+
+    const pdfBuffer = await res.arrayBuffer()
+    const periode   = filtres.date_debut ? `${filtres.date_debut}_${filtres.date_fin}` : 'global'
+
+    return new NextResponse(pdfBuffer, {
+      status: 200,
+      headers: {
+        'Content-Type': 'application/pdf',
+        'Content-Disposition': `attachment; filename="Rapport_Prospection_${periode}.pdf"`,
+      },
+    })
+  } catch (e: any) {
+    console.error('Erreur rapport prospection:', e)
+    return NextResponse.json({ error: e.message }, { status: 500 })
+  }
+}
+
+function emptyStats() {
+  return {
+    total: 0, nb_nouveaux: 0, nb_contactes: 0, nb_qualifies: 0,
+    nb_convertis: 0, nb_perdus: 0, taux_conversion: 0,
+    taux_qualification: 0, taux_perte: 0, delai_moyen_jours: null,
+    nb_geolocal: 0, pct_geolocal: 0, par_statut: {},
+    par_user: [], par_agence: [], par_source: [],
+    par_secteur: [], par_ville: [], tendance_mensuelle: [],
+  }
+}
 @app.post("/rapport/prospection")
 def generer_rapport_prospection(req: RapportProspectionRequest):
-    """Génère le rapport analytique de prospection (trame CBC officielle)."""
-    try:
-        buf = io.BytesIO()
-        tmpl = CBCTemplate()
-        s = req.stats
-        f = req.filtres
-        ref = f"DCEX-PROSP-{req.genere_le.replace('/', '')}"
-        st = []
-
-        # ── En-tête filtres ───────────────────────────────────
-        st.append(Paragraph('PARAMETRES DU RAPPORT', S_H1))
-        filt_data = [
-            ['Parametre', 'Valeur'],
-            ['Periode',           f.periode],
-            ['Statut filtre',     f.statut],
-            ['Source filtree',    f.source],
-            ['Secteur filtre',    f.secteur or 'Tous'],
-            ['Genere par',        req.genere_par],
-            ['Genere le',         req.genere_le],
-        ]
-        ft = cbc_table(filt_data, [60*mm, 114*mm])
-        st += [ft, Spacer(1, 6*mm)]
-
-        # ── 1. Indicateurs clés ───────────────────────────────
-        st.append(Paragraph('1.   INDICATEURS CLES', S_H1))
-        taux_col = _taux_color(s.taux_conversion)
-
-        kpi = Table(
-            [
-                ['Total',     'Convertis', 'Taux conv.', 'Taux qual.', 'Taux perte', 'Geolocalises'],
-                [
-                    str(s.total),
-                    str(s.nb_convertis),
-                    f'{s.taux_conversion}%',
-                    f'{s.taux_qualification}%',
-                    f'{s.taux_perte}%',
-                    f'{s.nb_geolocal} ({s.pct_geolocal}%)',
-                ]
-            ],
-            colWidths=[28*mm, 28*mm, 28*mm, 28*mm, 28*mm, 34*mm],
-            rowHeights=[10*mm, 16*mm]
-        )
-        kpi.setStyle(TableStyle([
-            ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
-            ('FONTNAME', (0, 1), (-1, 1), 'Helvetica-Bold'),
-            ('FONTSIZE', (0, 0), (-1, 0), 8),
-            ('FONTSIZE', (0, 1), (-1, 1), 14),
-            ('BACKGROUND', (0, 0), (-1, 0), CBC_GRIS),
-            ('TEXTCOLOR',  (0, 0), (-1, 0), BLANC),
-            ('BACKGROUND', (0, 1), (-1, 1), colors.HexColor('#F5F6FA')),
-            ('TEXTCOLOR',  (0, 1), (0, 1), CBC_BLEU),
-            ('TEXTCOLOR',  (1, 1), (1, 1), CBC_VERT),
-            ('TEXTCOLOR',  (2, 1), (2, 1), taux_col),
-            ('TEXTCOLOR',  (3, 1), (3, 1), CBC_INDIGO),
-            ('TEXTCOLOR',  (4, 1), (4, 1), CBC_ROUGE),
-            ('TEXTCOLOR',  (5, 1), (5, 1), CBC_BLEU),
-            ('ALIGN',  (0, 0), (-1, -1), 'CENTER'),
-            ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
-            ('GRID',   (0, 0), (-1, -1), 0.3, colors.HexColor('#CCCCCC')),
-        ]))
-        st += [kpi, Spacer(1, 3*mm)]
-
-        # Délai moyen
-        if s.delai_moyen_jours is not None:
-            st.append(Paragraph(
-                f'Delai moyen de conversion : <b>{s.delai_moyen_jours} jours</b>',
-                S_BODY
-            ))
-        st.append(Spacer(1, 5*mm))
-
-        # ── 2. Répartition par statut ─────────────────────────
-        st.append(Paragraph('2.   REPARTITION PAR STATUT', S_H1))
-        statut_data = [['Statut', 'Nb prospects', '% du total']]
-        statut_rows = [
-            ('Nouveau',  s.nb_nouveaux,  CBC_BLEU),
-            ('Contacte', s.nb_contactes, CBC_ORANG),
-            ('Qualifie', s.nb_qualifies, CBC_INDIGO),
-            ('Converti', s.nb_convertis, CBC_VERT),
-            ('Perdu',    s.nb_perdus,    CBC_GRIS),
-        ]
-        for label, nb, _ in statut_rows:
-            pct_val = round(nb / s.total * 100) if s.total > 0 else 0
-            statut_data.append([label, str(nb), f'{pct_val}%'])
-
-        st_t = cbc_table(statut_data, [80*mm, 50*mm, 44*mm])
-        for i, (_, _, col) in enumerate(statut_rows, 1):
-            st_t.setStyle(TableStyle([('TEXTCOLOR', (0, i), (0, i), col), ('FONTNAME', (0, i), (0, i), 'Helvetica-Bold')]))
-        st += [st_t, Spacer(1, 5*mm)]
-
-        # ── 3. Tendance mensuelle ─────────────────────────────
-        if s.tendance_mensuelle:
-            st.append(Paragraph('3.   TENDANCE MENSUELLE', S_H1))
-            tend_data = [['Mois', 'Crees', 'Convertis', 'Taux conversion']]
-            for t in s.tendance_mensuelle:
-                tend_data.append([t.mois_label, str(t.crees), str(t.convertis), f'{t.taux}%'])
-            tend_t = cbc_table(tend_data, [60*mm, 30*mm, 30*mm, 54*mm])
-            for i, t in enumerate(s.tendance_mensuelle, 1):
-                col = _taux_color(t.taux)
-                tend_t.setStyle(TableStyle([('TEXTCOLOR', (3, i), (3, i), col), ('FONTNAME', (3, i), (3, i), 'Helvetica-Bold')]))
-            st += [tend_t, Spacer(1, 5*mm)]
-
-        # ── 4. Performance par commercial ─────────────────────
-        if s.par_user:
-            st.append(Paragraph('4.   PERFORMANCE PAR COMMERCIAL', S_H1))
-            user_data = [['Commercial', 'Agence', 'Total', 'Convertis', 'Qualifies', 'Perdus', 'Taux conv.']]
-            for u in s.par_user:
-                user_data.append([
-                    u.nom[:28], u.agence[:22],
-                    str(u.total), str(u.convertis), str(u.qualifies), str(u.perdus),
-                    f'{u.taux_conversion}%'
-                ])
-            ut = cbc_table(user_data, [42*mm, 36*mm, 14*mm, 16*mm, 16*mm, 14*mm, 18*mm], wrap_cols=[0, 1])
-            for i, u in enumerate(s.par_user, 1):
-                col = _taux_color(u.taux_conversion)
-                ut.setStyle(TableStyle([('TEXTCOLOR', (6, i), (6, i), col), ('FONTNAME', (6, i), (6, i), 'Helvetica-Bold')]))
-            st += [ut, Spacer(1, 5*mm)]
-
-        # ── 5. Performance par agence ─────────────────────────
-        if s.par_agence:
-            st.append(Paragraph('5.   PERFORMANCE PAR AGENCE', S_H1))
-            ag_data = [['Agence', 'Total', 'Convertis', 'Qualifies', 'Taux conversion']]
-            for a in s.par_agence:
-                ag_data.append([a.nom[:40], str(a.total), str(a.convertis), str(a.qualifies), f'{a.taux_conversion}%'])
-            agt = cbc_table(ag_data, [70*mm, 20*mm, 22*mm, 22*mm, 40*mm], wrap_cols=[0])
-            for i, a in enumerate(s.par_agence, 1):
-                col = _taux_color(a.taux_conversion)
-                agt.setStyle(TableStyle([('TEXTCOLOR', (4, i), (4, i), col), ('FONTNAME', (4, i), (4, i), 'Helvetica-Bold')]))
-            st += [agt, Spacer(1, 5*mm)]
-
-        # ── 6. Par source ─────────────────────────────────────
-        if s.par_source:
-            st.append(Paragraph('6.   REPARTITION PAR SOURCE', S_H1))
-            src_data = [['Source', 'Nb prospects', '% du total']]
-            for src in s.par_source:
-                src_data.append([src.source or 'Non renseignee', str(src.nb), f'{src.pct}%'])
-            st += [cbc_table(src_data, [90*mm, 40*mm, 44*mm]), Spacer(1, 5*mm)]
-
-        # ── 7. Par secteur ────────────────────────────────────
-        if s.par_secteur:
-            st.append(Paragraph('7.   REPARTITION PAR SECTEUR D\'ACTIVITE', S_H1))
-            sec_data = [["Secteur d'activite", 'Nb prospects', '% du total']]
-            for sec in s.par_secteur:
-                sec_data.append([sec.secteur or 'Non renseigne', str(sec.nb), f'{sec.pct}%'])
-            st += [cbc_table(sec_data, [100*mm, 40*mm, 34*mm], wrap_cols=[0]), Spacer(1, 5*mm)]
-
-        # ── 8. Par ville ──────────────────────────────────────
-        if s.par_ville:
-            st.append(Paragraph('8.   REPARTITION PAR VILLE (TOP 10)', S_H1))
-            vil_data = [['Ville', 'Nb prospects', '% du total']]
-            for v in s.par_ville:
-                vil_data.append([v.ville or 'Non renseignee', str(v.nb), f'{v.pct}%'])
-            st += [cbc_table(vil_data, [90*mm, 40*mm, 44*mm]), Spacer(1, 5*mm)]
-
-        # ── Build ─────────────────────────────────────────────
-        tmpl.build(
-            buf, st,
-            titre='RAPPORT ANALYTIQUE — PROSPECTION',
-            sous_titre=f'Periode : {f.periode} — {req.genere_par}',
-            reference=ref,
-        )
-        buf.seek(0)
-        return StreamingResponse(
-            buf,
-            media_type='application/pdf',
-            headers={
-                'Content-Disposition':
-                    f'attachment; filename="Rapport_Prospection_{req.genere_le.replace("/", "")}.pdf"'
-            }
-        )
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
