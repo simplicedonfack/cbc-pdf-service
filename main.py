@@ -1,5 +1,10 @@
 """
 CBC PDF Microservice
+[MODIF 20/07] Rapport Plan Marketing : budget prévu retiré de l'AFFICHAGE
+  (sous-titre + ligne du tableau de synthèse). Le champ budget_prevu reste
+  REÇU du client (obligatoire, sinon 422) et conservé en base côté DIGITALIS ;
+  il n'est simplement plus imprimé. Réversible : ré-ajouter les 2 lignes
+  repérées "MASQUAGE BUDGET". Aucun autre rapport (superviseur, etc.) touché.
 Service FastAPI qui génère des rapports PDF avec la trame officielle CBC.
 Déployable sur Render.com (free tier).
 """
@@ -449,13 +454,12 @@ def generer_rapport_plan(req: RapportPlanRequest):
             ['Actions realisees', str(realisees), f'{round(realisees/total*100) if total else 0}% du plan'],
             ['Actions a risque', str(a_risque), 'Retardees, reportees ou suspendues'],
             ['Contraintes bloquantes', str(contraintes), 'Necessitent une decision'],
-            ['Budget prevu', f"{req.budget_prevu/1e6:.0f} M FCFA", f'Exercice {req.annee}'],
+            # MASQUAGE BUDGET : ligne 'Budget prevu' retirée du tableau de synthèse
         ]
         kt = cbc_table(k_data, [80*mm, 30*mm, 64*mm], wrap_cols=[0,2])
         taux_col = CBC_VERT if taux_moyen>=50 else CBC_ROUGE
         kt.setStyle(TableStyle([
-            ('FONTNAME',(0,-1),(-1,-1),'Helvetica-Bold'),
-            ('BACKGROUND',(0,-1),(-1,-1),colors.HexColor('#EAF0F8')),
+            # MASQUAGE BUDGET : style de dernière ligne retiré (visait la ligne budget)
             ('TEXTCOLOR',(1,1),(2,1),taux_col),
         ]))
         st += [kt, Spacer(1,5*mm)]
@@ -476,7 +480,8 @@ def generer_rapport_plan(req: RapportPlanRequest):
             for aj in req.ajustements:
                 aj_data.append([(aj.action_intitule or '')[:120], aj.type_ajustement, (aj.motif or '')[:200], aj.date_ajustement])
             st += [cbc_table(aj_data, [50*mm, 20*mm, 70*mm, 20*mm], wrap_cols=[0,2]), Spacer(1,5*mm)]
-        tmpl.build(buf, st, titre=f'RAPPORT PLAN MARKETING {req.annee}', sous_titre=f'Version {req.version} — Budget {req.budget_prevu/1e6:.0f} M FCFA', reference=ref)
+        # MASQUAGE BUDGET : sous-titre sans le budget
+        tmpl.build(buf, st, titre=f'RAPPORT PLAN MARKETING {req.annee}', sous_titre=f'Version {req.version}', reference=ref)
         buf.seek(0)
         return StreamingResponse(buf, media_type='application/pdf', headers={'Content-Disposition': f'attachment; filename="Rapport_Plan_Marketing_{req.annee}.pdf"'})
     except Exception as e:
